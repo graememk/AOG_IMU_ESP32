@@ -299,7 +299,11 @@ void WiFi_STA_connect_network() {//run WiFi_scan_networks first
     case 5: WiFi.begin(Set.ssid5, Set.password5); break;
     }
     //set IP to DHCP on first run. call immediately after begin
-    if (WiFi_STA_connect_call_nr == 0) { WiFi.config(0U, 0U, 0U); Serial.println("enable DHCP for WiFi"); WiFi_STA_connect_call_nr++; }
+    if (WiFi_STA_connect_call_nr == 0) 
+    { 
+//        WiFi.config(0U, 0U, 0U); 
+        Serial.println("enable DHCP for WiFi"); WiFi_STA_connect_call_nr++; 
+    }
     delay(2);
 }
 

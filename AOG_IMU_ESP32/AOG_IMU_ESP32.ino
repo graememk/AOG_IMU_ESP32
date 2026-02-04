@@ -24,9 +24,9 @@ char VersionTXT[120] = " - 5. April 2021 by MTZ8302<br>(V5, CMPS and Ethernet su
 struct Storage {
 	//WiFi---------------------------------------------------------------------------------------------
 	//tractors WiFi or mobile hotspots. Connections are checked in this order
-	char ssid1[24] = "GPS_unit_ESP_M8T";	  // WiFi network Client name
+	char ssid1[24] = "Wifi 1";	  // WiFi network Client name
 	char password1[24] = "";                // WiFi network password//Accesspoint name and password
-	char ssid2[24] = "Fendt_209V";			    // WiFi network Client name
+	char ssid2[24] = "wifi 2";			    // WiFi network Client name
 	char password2[24] = "";                // WiFi network password//Accesspoint name and password
 	char ssid3[24] = "GPS_unit_F9P_Net";    // WiFi network Client name
 	char password3[24] = "";                // WiFi network password//Accesspoint name and password
@@ -62,7 +62,7 @@ struct Storage {
 
 	byte IMUDataRate = 0;							            // 0 = 10 Hz (default) 
 
-	uint8_t IMUType = 2;                          // 0: none, 2: CMPS14, 3: BNO080/85 IMU
+	uint8_t IMUType = 4;                          // 0: none, 2: CMPS14, 3: BNO080/85 IMU
 
 	uint8_t InvertRoll = 0;		                    // 0: no, set to 1 to change roll direction
 
@@ -82,10 +82,10 @@ struct Storage {
 	// set to 255 for unused
 
 	uint8_t LEDWiFi_PIN = 2;		                  // WiFi Status LED 255 = off
-	uint8_t LEDWiFi_ON_Level = 1;                 // 1 = HIGH = LED on high, 0 = LOW = LED on low
+	uint8_t LEDWiFi_ON_Level = 0;                 // 1 = HIGH = LED on high, 0 = LOW = LED on low
 
-	uint8_t SDA = 21;			                        // I2C Pins for CMPS14 / BNO
-	uint8_t SCL = 22;
+	uint8_t SDA = 8; //21;			                        // I2C Pins for CMPS14 / BNO
+	uint8_t SCL = 9;//22;
 
 	uint8_t Eth_CS_PIN = 5;		                    // CS PIN with SPI Ethernet hardware  SPI config: MOSI 23 / MISO 19 / CLK18 / CS5
 
@@ -134,12 +134,15 @@ byte IMUToAOG[14] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 #include <EthernetUdp.h>   
 #include "BNO08x_AOG.h"
 
+#include <Adafruit_BNO08x.h>
+
 // Instances --------------------------------------------------------------------------------------
 WiFiUDP WiFiUDPFromAOG;
 WiFiUDP WiFiUDPToAOG;
 EthernetUDP EthUDPToAOG;
 EthernetUDP EthUDPFromAOG;
 WebServer WiFi_Server(80);
+//Adafruit_BNO08x bno08x;
 BNO080 bno08x;
 
 TaskHandle_t taskHandle_Eth_connect;
@@ -187,6 +190,61 @@ int bno08xHeading10x = 0, bno08xRoll10x = 0;
 long argVal = 0;
 
 
+// Adafruit stuff -----------------------------------------------------------------------------------------------
+
+#define BNO08X_RESET -1
+
+struct euler_t {
+  float yaw;
+  float pitch;
+  float roll;
+} ypr;
+
+Adafruit_BNO08x  bno085(BNO08X_RESET);
+sh2_SensorValue_t sensorValue;
+
+#ifdef FAST_MODE
+  // Top frequency is reported to be 1000Hz (but freq is somewhat variable)
+  sh2_SensorId_t reportType = SH2_GYRO_INTEGRATED_RV;
+  long reportIntervalUs = 2000;
+#else
+  // Top frequency is about 250Hz but this report is more accurate
+  sh2_SensorId_t reportType = SH2_ARVR_STABILIZED_RV;
+  long reportIntervalUs = 10000;
+#endif
+void setReports(sh2_SensorId_t reportType, long report_interval) {
+  Serial.println("Setting desired reports");
+  if (! bno085.enableReport(reportType, report_interval)) {
+    Serial.println("Could not enable stabilized remote vector");
+  }
+}
+
+
+void quaternionToEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false) {
+
+    float sqr = sq(qr);
+    float sqi = sq(qi);
+    float sqj = sq(qj);
+    float sqk = sq(qk);
+
+    ypr->yaw = atan2(2.0 * (qi * qj + qk * qr), (sqi - sqj - sqk + sqr));
+    ypr->pitch = asin(-2.0 * (qi * qk - qj * qr) / (sqi + sqj + sqk + sqr));
+    ypr->roll = atan2(2.0 * (qj * qk + qi * qr), (-sqi - sqj + sqk + sqr));
+
+    if (degrees) {
+      ypr->yaw *= RAD_TO_DEG;
+      ypr->pitch *= RAD_TO_DEG;
+      ypr->roll *= RAD_TO_DEG;
+    }
+}
+
+void quaternionToEulerRV(sh2_RotationVectorWAcc_t* rotational_vector, euler_t* ypr, bool degrees = false) {
+    quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
+}
+
+void quaternionToEulerGI(sh2_GyroIntegratedRV_t* rotational_vector, euler_t* ypr, bool degrees = false) {
+    quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
+}
 
 // Setup procedure -----------------------------------------------------------------------------------------------
 
@@ -365,6 +423,51 @@ void loop() {
 				IMUToAOG[7] = (byte)bno08xRoll10x;
 				IMUToAOG[8] = bno08xRoll10x >> 8;
 			}
+			break;
+
+		case 4:
+
+			if (bno085.wasReset()) {
+				Serial.print("sensor was reset ");
+				setReports(reportType, reportIntervalUs);
+			}
+
+			if (bno085.getSensorEvent(&sensorValue)) {
+				// in this demo only one report type will be received depending on FAST_MODE define (above)
+				switch (sensorValue.sensorId) {
+					case SH2_ARVR_STABILIZED_RV:
+						quaternionToEulerRV(&sensorValue.un.arvrStabilizedRV, &ypr, true);
+					case SH2_GYRO_INTEGRATED_RV:
+						// faster (more noise?)
+						quaternionToEulerGI(&sensorValue.un.gyroIntegratedRV, &ypr, true);
+						break;
+				}
+				bno08xHeading = ypr.yaw; // Convert yaw / heading to degrees
+				bno08xHeading = -bno08xHeading; //BNO085 counter clockwise data to clockwise data
+				if (bno08xHeading < 0 && bno08xHeading >= -180) //Scale BNO085 yaw from [-180�;180�] to [0;360�]
+				{
+					bno08xHeading = bno08xHeading + 360;
+				}
+
+				bno08xRoll = ypr.roll; //Convert roll to degrees
+				bno08xPitch = ypr.pitch; // Convert pitch to degrees
+
+				bno08xHeading10x = (int)(bno08xHeading * 10);
+				bno08xRoll10x = (int)(bno08xRoll * 10);
+				heading = bno08xHeading;
+				roll = float(bno08xRoll);
+
+				//the heading x10
+				IMUToAOG[5] = (byte)bno08xHeading10x;
+				IMUToAOG[6] = bno08xHeading10x >> 8;
+
+				//the roll x10
+				IMUToAOG[7] = (byte)bno08xRoll10x;
+				IMUToAOG[8] = bno08xRoll10x >> 8;
+
+
+			}			
+
 			break;
 
 		}//end switch case
